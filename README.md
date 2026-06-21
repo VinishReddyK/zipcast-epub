@@ -10,9 +10,12 @@ driven by a small web GUI instead of editing notebook cells.
 1. Open the notebook in Colab using the badge above, or directly:
    https://colab.research.google.com/github/VinishReddyK/zipcast-epub/blob/main/notebooks/colab_zipcast_qwen3tts.ipynb
 2. Set **Runtime > Change runtime type > T4 GPU**.
-3. Run every cell top to bottom. The last cell starts a local web app and opens
-   a free Cloudflare "quick tunnel" to it (no account, no signup, no auth token)
-   and prints a `https://*.trycloudflare.com` link.
+3. Run every cell top to bottom. One cell **preloads the Qwen3-TTS model**
+   before anything else starts, so the first conversion doesn't pay a
+   multi-minute cold-load cost (the model stays cached for every job after
+   that too). The last cell starts a local web app and opens a free Cloudflare
+   "quick tunnel" to it (no account, no signup, no auth token) and prints a
+   `https://*.trycloudflare.com` link.
 4. Open that link. From the page:
    - **Upload** one or more `.epub` files (or drag them into the Colab Files
      panel beforehand -- either works, the GUI lists whatever's in `/content`).

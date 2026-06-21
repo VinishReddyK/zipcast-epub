@@ -36,8 +36,11 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _active_job_id: str | None = None
 
-_design_engine_cache: dict[str, "generate.Qwen3VoiceDesignEngine"] = {}
-_design_engine_lock = threading.Lock()
+# engines are loaded once and cached for the life of the process -- loading
+# takes minutes, so reloading per job (or per voice-test click) would be a
+# multi-minute tax every single time. keyed by (kind, model_name, device).
+_engine_cache: dict[tuple[str, str, str], object] = {}
+_engine_lock = threading.Lock()
 
 
 def _device() -> str:
@@ -47,6 +50,29 @@ def _device() -> str:
         return "cuda" if torch.cuda.is_available() else "cpu"
     except ImportError:
         return "cpu"
+
+
+def _get_or_load_engine(kind: str, model_name: str, device: str, on_progress=None):
+    """kind is 'preset' (CustomVoice) or 'design' (VoiceDesign)."""
+    key = (kind, model_name, device)
+    with _engine_lock:
+        engine = _engine_cache.get(key)
+        if engine is None:
+            if kind == "design":
+                engine = generate.Qwen3VoiceDesignEngine(model_name=model_name, device=device, on_progress=on_progress)
+            else:
+                engine = generate.Qwen3TTSEngine(model_name=model_name, device=device, on_progress=on_progress)
+            _engine_cache[key] = engine
+        return engine
+
+
+def preload(model_name: str = generate.DEFAULT_MODEL, device: str | None = None, on_progress=None) -> None:
+    """load the named-speaker CustomVoice model into the cache now, so the
+    first job started from the GUI doesn't pay the multi-minute load cost.
+    call this before starting the server/tunnel.
+    """
+    device = device or _device()
+    _get_or_load_engine("preset", model_name, device, on_progress=on_progress)
 
 
 @app.route("/")
@@ -120,15 +146,11 @@ def api_voice_test():
         return jsonify({"error": "description is required"}), 400
 
     device = _device()
-    with _design_engine_lock:
-        engine = _design_engine_cache.get(model_name)
-        if engine is None:
-            engine = generate.Qwen3VoiceDesignEngine(model_name=model_name, device=device)
-            _design_engine_cache[model_name] = engine
-        try:
-            audio, sr = engine.design_sample(sample_text, description)
-        except Exception as e:  # noqa: BLE001
-            return jsonify({"error": str(e)}), 500
+    engine = _get_or_load_engine("design", model_name, device)
+    try:
+        audio, sr = engine.design_sample(sample_text, description)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
 
     import soundfile as sf
 
@@ -156,13 +178,19 @@ def _run_job(job_id: str, kwargs: dict) -> None:
     job = _jobs[job_id]
     on_progress = _make_progress_recorder(job_id)
     try:
-        # free GPU memory held by the voice-test engine before the real run
-        with _design_engine_lock:
-            for engine in _design_engine_cache.values():
-                engine.unload()
-            _design_engine_cache.clear()
+        # reuse the cached/preloaded engine instead of loading a fresh one for
+        # every job -- loading takes minutes, this should be a one-time cost
+        device = kwargs.get("device", "cpu")
+        if kwargs.get("voice_mode") == "design":
+            model_name = kwargs.get("design_model_name", generate.VOICE_DESIGN_MODEL)
+            engine = _get_or_load_engine("design", model_name, device, on_progress=on_progress)
+        else:
+            model_name = kwargs.get("model_name", generate.DEFAULT_MODEL)
+            engine = _get_or_load_engine("preset", model_name, device, on_progress=on_progress)
 
-        generate.run_batch(content_dir=str(CONTENT_DIR), work_dir=str(WORK_DIR), on_progress=on_progress, **kwargs)
+        generate.run_batch(
+            content_dir=str(CONTENT_DIR), work_dir=str(WORK_DIR), engine=engine, on_progress=on_progress, **kwargs
+        )
         with job["lock"]:
             job["status"] = "done"
             job["cond"].notify_all()

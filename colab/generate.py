@@ -522,6 +522,7 @@ def run_batch(
     voice_description: str = "",
     model_name: str = DEFAULT_MODEL,
     design_model_name: str = VOICE_DESIGN_MODEL,
+    engine: "Qwen3TTSEngine | Qwen3VoiceDesignEngine | None" = None,
     on_progress: ProgressCallback | None = None,
 ) -> list[Path]:
     """find every .epub in content_dir (or use epub_paths) and turn each into an
@@ -556,10 +557,14 @@ def run_batch(
         _emit(on_progress, {"event": "all_done", "outputs": []})
         return []
 
-    if voice_mode == "design":
-        engine: Qwen3TTSEngine | Qwen3VoiceDesignEngine = Qwen3VoiceDesignEngine(
-            model_name=design_model_name, device=device, on_progress=on_progress
-        )
+    if engine is not None:
+        # reuse a pre-loaded engine (e.g. preloaded before the GUI/tunnel even
+        # started) instead of paying the multi-minute load cost on every job
+        if isinstance(engine, Qwen3TTSEngine):
+            engine.batch_size = max(1, batch_size)
+        voice_kwargs = {"instruct": voice_description} if voice_mode == "design" else {"speaker": speaker}
+    elif voice_mode == "design":
+        engine = Qwen3VoiceDesignEngine(model_name=design_model_name, device=device, on_progress=on_progress)
         voice_kwargs = {"instruct": voice_description}
     else:
         engine = Qwen3TTSEngine(
