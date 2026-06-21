@@ -179,8 +179,16 @@ function handleEvent(ev) {
 
       const chapPct = ev.chunks_in_chapter ? Math.min(100, (ev.chunks_done_chapter / ev.chunks_in_chapter) * 100) : 0;
       $("chapter-fill").style.width = `${chapPct}%`;
+
+      logLine(
+        `  chunk ${ev.chunks_done_chapter}/${ev.chunks_in_chapter} of "${ev.chapter_title}" ` +
+        `(${ev.chunks_done}/${ev.chunks_total} overall, ${ev.chunks_per_sec.toFixed(2)} chunks/sec, ${fmtEta(ev.eta_sec)})`
+      );
       break;
     }
+    case "log":
+      logLine(ev.message);
+      break;
     case "chapter_done":
       logLine(`✓ chapter ${ev.chapter_num}/${ev.chapters_total}: ${ev.chapter_title}`, "ok");
       break;

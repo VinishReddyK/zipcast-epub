@@ -43,6 +43,15 @@ def _emit(on_progress: ProgressCallback | None, event: dict) -> None:
         on_progress(event)
 
 
+def _log(on_progress: ProgressCallback | None, message: str) -> None:
+    """print (for plain notebook/script use) and also emit a structured 'log'
+    event so the web GUI -- which can't rely on seeing a background thread's
+    stdout in the notebook cell output -- shows every message too.
+    """
+    print(message)
+    _emit(on_progress, {"event": "log", "message": message})
+
+
 def find_epubs(content_dir: str | Path = "/content") -> list[Path]:
     """locate every .epub file in content_dir, in name order."""
     content_dir = Path(content_dir)
@@ -166,7 +175,13 @@ def _quiet_transformers_logging() -> None:
 class Qwen3TTSEngine:
     """built-in named-speaker engine (Qwen3-TTS CustomVoice model)."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, device: str = "cuda", batch_size: int = DEFAULT_BATCH_SIZE):
+    def __init__(
+        self,
+        model_name: str = DEFAULT_MODEL,
+        device: str = "cuda",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        on_progress: ProgressCallback | None = None,
+    ):
         import torch
         from qwen_tts import Qwen3TTSModel  # type: ignore
 
@@ -178,11 +193,11 @@ class Qwen3TTSEngine:
         # tune this down (e.g. to 2-4) if you still hit CUDA OOM.
         self.batch_size = max(1, batch_size)
         dtype = _select_dtype(torch, device)
-        print(f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
+        _log(on_progress, f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
         self.model = Qwen3TTSModel.from_pretrained(
             model_name, device_map=device, dtype=dtype, attn_implementation="sdpa"
         )
-        print("model loaded.")
+        _log(on_progress, "model loaded.")
 
     def synthesize_batch(self, batch: list[str], speaker: str = DEFAULT_SPEAKER) -> tuple[list[np.ndarray], int]:
         with self._torch.inference_mode():
@@ -209,7 +224,12 @@ class Qwen3VoiceDesignEngine:
     voice, not raw throughput.
     """
 
-    def __init__(self, model_name: str = VOICE_DESIGN_MODEL, device: str = "cuda"):
+    def __init__(
+        self,
+        model_name: str = VOICE_DESIGN_MODEL,
+        device: str = "cuda",
+        on_progress: ProgressCallback | None = None,
+    ):
         import torch
         from qwen_tts import Qwen3TTSModel  # type: ignore
 
@@ -217,11 +237,11 @@ class Qwen3VoiceDesignEngine:
         self._torch = torch
         self.batch_size = 1
         dtype = _select_dtype(torch, device)
-        print(f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
+        _log(on_progress, f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
         self.model = Qwen3TTSModel.from_pretrained(
             model_name, device_map=device, dtype=dtype, attn_implementation="sdpa"
         )
-        print("model loaded.")
+        _log(on_progress, "model loaded.")
 
     def synthesize_batch(self, batch: list[str], instruct: str = "") -> tuple[list[np.ndarray], int]:
         results = []
@@ -317,6 +337,7 @@ def build_m4b(
     cover_path: Path | None,
     output_path: Path,
     bitrate: str = "192k",
+    on_progress: ProgressCallback | None = None,
 ) -> Path:
     """concatenate per-chapter wavs into a single m4b with chapter markers + cover art."""
     ffmetadata = [";FFMETADATA1"]
@@ -364,11 +385,11 @@ def build_m4b(
         cmd += ["-map", map_video, "-c:v", "copy", "-disposition:v:0", "attached_pic"]
     cmd += ["-c:a", "aac", "-b:a", bitrate, str(output_path)]
 
-    print(f"building {output_path.name}...")
+    _log(on_progress, f"building {output_path.name}...")
     try:
         subprocess.run(cmd, check=True, capture_output=True)
     except subprocess.CalledProcessError as e:
-        print(f"ffmpeg failed: {e.stderr.decode()}")
+        _log(on_progress, f"ffmpeg failed: {e.stderr.decode()}")
         raise
     finally:
         meta_path.unlink(missing_ok=True)
@@ -476,7 +497,7 @@ def synthesize_book(
 
     cover_path = plan.extract_dir / COVER_FILE
     cover_path = cover_path if cover_path.exists() else None
-    build_m4b(plan.metadata, wav_paths, cover_path, plan.output_path)
+    build_m4b(plan.metadata, wav_paths, cover_path, plan.output_path, on_progress=on_progress)
 
     _emit(on_progress, {
         "event": "book_done",
@@ -514,7 +535,7 @@ def run_batch(
     work_dir = Path(work_dir)
 
     paths = [Path(p) for p in epub_paths] if epub_paths else find_epubs(content_dir)
-    print(f"found {len(paths)} epub file(s): {', '.join(p.name for p in paths)}")
+    _log(on_progress, f"found {len(paths)} epub file(s): {', '.join(p.name for p in paths)}")
 
     # planning phase: parse + chunk everything upfront (CPU-only, cheap) so the
     # total chunk count -- and therefore ETA -- is accurate from the first batch
@@ -524,7 +545,7 @@ def run_batch(
     for epub_path in paths:
         plan = plan_book(epub_path, content_dir, work_dir, chapters_spec=chapters, chunk_chars=chunk_chars)
         if plan.output_path.exists():
-            print(f"skip (already built): {plan.output_path.name}")
+            _log(on_progress, f"skip (already built): {plan.output_path.name}")
             continue
         plans.append(plan)
         chunks_total += plan.total_chunks
@@ -537,11 +558,13 @@ def run_batch(
 
     if voice_mode == "design":
         engine: Qwen3TTSEngine | Qwen3VoiceDesignEngine = Qwen3VoiceDesignEngine(
-            model_name=design_model_name, device=device
+            model_name=design_model_name, device=device, on_progress=on_progress
         )
         voice_kwargs = {"instruct": voice_description}
     else:
-        engine = Qwen3TTSEngine(model_name=model_name, device=device, batch_size=batch_size)
+        engine = Qwen3TTSEngine(
+            model_name=model_name, device=device, batch_size=batch_size, on_progress=on_progress
+        )
         voice_kwargs = {"speaker": speaker}
 
     run_state = {"chunks_done": 0, "start_time": time.monotonic()}
@@ -552,6 +575,6 @@ def run_batch(
         )
         outputs.append(output_path)
 
-    print(f"\nall done: {len(outputs)} audiobook(s) generated")
+    _log(on_progress, f"all done: {len(outputs)} audiobook(s) generated")
     _emit(on_progress, {"event": "all_done", "outputs": [str(p) for p in outputs]})
     return outputs
