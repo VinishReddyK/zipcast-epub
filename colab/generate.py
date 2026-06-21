@@ -154,15 +154,22 @@ def concatenate_audio(chunks: list[np.ndarray], sample_rate: int, pause_ms: int)
     return np.concatenate(parts)
 
 
-def _select_dtype(torch, device: str):
+def _select_dtype(torch, device: str, fp16_fallback: bool = True):
     """bf16 only pays off on Ampere+ (compute capability >= 8.0, e.g. A100/L4);
     Turing cards like the free-tier Colab T4 (7.5) lack bf16 tensor cores, so
     fall back to fp16 there for real speed instead of just numerical compatibility.
+
+    the ICL voice-clone path concatenates ref-audio codec tokens with text
+    tokens and overflows to inf/nan logits in fp16 on Turing, crashing
+    torch.multinomial during sampling -- so callers on that path should pass
+    fp16_fallback=False to fall back to fp32 (slower, but stable) instead.
     """
     if "cuda" not in device or not torch.cuda.is_available():
         return torch.float32
     major, _ = torch.cuda.get_device_capability()
-    return torch.bfloat16 if major >= 8 else torch.float16
+    if major >= 8:
+        return torch.bfloat16
+    return torch.float16 if fp16_fallback else torch.float32
 
 
 def _quiet_transformers_logging() -> None:
@@ -292,7 +299,7 @@ class Qwen3VoiceCloneEngine:
         self._torch = torch
         self.batch_size = max(1, batch_size)
         self._ref_audio_cache: dict[str, tuple[np.ndarray, int]] = {}
-        dtype = _select_dtype(torch, device)
+        dtype = _select_dtype(torch, device, fp16_fallback=False)
         _log(on_progress, f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
         self.model = Qwen3TTSModel.from_pretrained(
             model_name, device_map=device, dtype=dtype, attn_implementation="sdpa"
