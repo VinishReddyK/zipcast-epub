@@ -102,6 +102,17 @@ def concatenate_audio(chunks: list[np.ndarray], sample_rate: int, pause_ms: int)
     return np.concatenate(parts)
 
 
+def _select_dtype(torch, device: str):
+    """bf16 only pays off on Ampere+ (compute capability >= 8.0, e.g. A100/L4);
+    Turing cards like the free-tier Colab T4 (7.5) lack bf16 tensor cores, so
+    fall back to fp16 there for real speed instead of just numerical compatibility.
+    """
+    if "cuda" not in device or not torch.cuda.is_available():
+        return torch.float32
+    major, _ = torch.cuda.get_device_capability()
+    return torch.bfloat16 if major >= 8 else torch.float16
+
+
 class Qwen3TTSEngine:
     """thin wrapper around the `qwen-tts` package for chapter-by-chapter synthesis."""
 
@@ -110,7 +121,7 @@ class Qwen3TTSEngine:
         from qwen_tts import Qwen3TTSModel  # type: ignore
 
         self._torch = torch
-        dtype = torch.bfloat16 if "cuda" in device else torch.float32
+        dtype = _select_dtype(torch, device)
         print(f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
         self.model = Qwen3TTSModel.from_pretrained(
             model_name, device_map=device, dtype=dtype, attn_implementation="sdpa"
