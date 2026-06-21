@@ -1,5 +1,7 @@
 # zipcast
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VinishReddyK/zipcast-epub/blob/main/notebooks/colab_zipcast_qwen3tts.ipynb)
+
 epub → zip (locally) → audiobook `.m4b` (on a free Colab GPU, via Qwen3-TTS).
 
 Split into two halves so the heavy TTS work never has to run on a weak laptop:
@@ -30,12 +32,14 @@ cover.jpg           # if the epub has one
 
 ## 2. Generate the audiobook (Colab)
 
-1. Push this repo to GitHub (or your git host of choice) so Colab can clone it.
-2. Open `notebooks/colab_zipcast_qwen3tts.ipynb` in Colab and set the `REPO_URL`
-   field in the first code cell to your repo's URL.
-3. Set **Runtime > Change runtime type > T4 GPU**.
-4. Drag `book.zip` into the Colab **Files** panel so it lands in `/content`.
-5. Run every cell top to bottom. The last cell downloads the finished `.m4b`.
+1. Open the notebook in Colab using the badge above, or directly:
+   https://colab.research.google.com/github/VinishReddyK/zipcast-epub/blob/main/notebooks/colab_zipcast_qwen3tts.ipynb
+2. Set **Runtime > Change runtime type > T4 GPU**.
+3. Drag `book.zip` into the Colab **Files** panel so it lands in `/content`.
+4. Run every cell top to bottom. The last cell downloads the finished `.m4b`.
+
+(The first code cell clones https://github.com/VinishReddyK/zipcast-epub.git via the
+`REPO_URL` field -- only change it if you fork this repo elsewhere.)
 
 Synthesis is resumable: re-running the synthesis cell skips chapters whose `.wav`
 already exists under `/content/zipcast_work/wav`, so a dropped Colab session
