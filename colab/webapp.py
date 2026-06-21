@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import threading
 import time
@@ -33,6 +34,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 sock = Sock(app)
+
+
+class _SuppressActivePoll(logging.Filter):
+    """the notebook's mirror loop polls /api/jobs/active once a second while
+    idle, waiting for the next job -- silence just that access-log line so it
+    doesn't bury everything else in repeated noise, while leaving real
+    requests (and any errors) visible.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/api/jobs/active" not in record.getMessage()
+
+
+logging.getLogger("werkzeug").addFilter(_SuppressActivePoll())
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()

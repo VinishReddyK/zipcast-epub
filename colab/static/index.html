@@ -35,18 +35,14 @@
 
   <section class="card">
     <h2>2. Chapters</h2>
-    <label class="field">
-      <span>Chapter selection</span>
-      <input type="text" id="chapters" value="all" placeholder="all">
-      <small class="muted">examples: <code>all</code>, <code>5</code>, <code>1-10</code>, <code>1,3,5-8</code> &mdash; applied per book</small>
-    </label>
+    <input type="text" id="chapters" value="all" class="hidden">
 
     <div id="chapter-picker" class="chapter-picker hidden">
       <small class="muted">
         Some books (e.g. later volumes of a series) number chapters by their
         position in <em>this</em> file, not by their title -- "chapter 1" here
         might be titled "Chapter 270" in the book. Find it by title below
-        instead of guessing the number:
+        instead of guessing the number. Leave as-is to convert the whole book.
       </small>
 
       <label class="field">
@@ -59,16 +55,14 @@
         <input type="text" id="chapter-search" placeholder="e.g. 270, or a word from the title">
       </label>
 
-      <div class="grid-2">
-        <label class="field">
-          <span>From</span>
-          <select id="chapter-from"></select>
-        </label>
-        <label class="field">
-          <span>To</span>
-          <select id="chapter-to"></select>
-        </label>
-      </div>
+      <label class="field">
+        <span>From</span>
+        <select id="chapter-from"></select>
+      </label>
+      <label class="field">
+        <span>To</span>
+        <select id="chapter-to"></select>
+      </label>
       <small class="muted" id="chapter-search-status"></small>
     </div>
   </section>
