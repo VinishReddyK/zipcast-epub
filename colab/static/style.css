@@ -136,6 +136,18 @@ input:focus, select:focus, textarea:focus {
   .grid-2 { grid-template-columns: 1fr; }
 }
 
+.chapter-picker {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--card-border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.chapter-picker select {
+  max-width: 100%;
+}
+
 .btn {
   background: #1c2230;
   color: var(--text);

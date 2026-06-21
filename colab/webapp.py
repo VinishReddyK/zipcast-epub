@@ -21,7 +21,8 @@ import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask_sock import Sock
 from werkzeug.utils import secure_filename
 
 from . import generate
@@ -31,6 +32,7 @@ WORK_DIR = Path(os.environ.get("ZIPCAST_WORK_DIR", str(CONTENT_DIR / "zipcast_wo
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
+sock = Sock(app)
 
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
@@ -96,6 +98,25 @@ def api_books():
             "chapters": len(metadata["chapters"]),
         })
     return jsonify({"books": books})
+
+
+@app.route("/api/books/<path:filename>/chapters")
+def api_book_chapters(filename: str):
+    # continuation-numbered series (e.g. epub "volume 2" whose first chapter
+    # title says "Chapter 270") make plain positional ranges ("1-10") error
+    # prone -- this lets the GUI show real chapter titles to search/pick from
+    safe_name = secure_filename(filename)
+    epub_path = (CONTENT_DIR / safe_name).resolve()
+    if epub_path.parent != CONTENT_DIR.resolve() or not epub_path.exists():
+        return jsonify({"error": "unknown book"}), 404
+
+    try:
+        metadata = generate.peek_epub(epub_path)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+    chapters = [{"index": c["index"], "title": c["title"]} for c in metadata["chapters"]]
+    return jsonify({"filename": safe_name, "title": metadata["title"], "chapters": chapters})
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -275,34 +296,31 @@ def api_job_status(job_id: str):
         })
 
 
-@app.route("/api/jobs/<job_id>/events")
-def api_job_events(job_id: str):
+@sock.route("/ws/jobs/<job_id>")
+def ws_job_events(ws, job_id: str):
+    # websocket instead of SSE: SSE's chunked response was getting buffered
+    # somewhere between the Cloudflare quick tunnel and the browser, so
+    # progress only ever showed up in bursts (or not at all) instead of live.
+    # replays the full event history from the start, so a page refresh that
+    # reconnects here sees everything that already happened, not just what's
+    # left.
     job = _jobs.get(job_id)
     if job is None:
-        return jsonify({"error": "unknown job_id"}), 404
+        ws.send(json.dumps({"event": "error", "message": "unknown job_id"}))
+        return
 
-    def stream():
-        idx = 0
-        while True:
-            with job["lock"]:
-                job["cond"].wait_for(lambda: len(job["events"]) > idx or job["status"] != "running", timeout=15)
-                new_events = job["events"][idx:]
-                idx = len(job["events"])
-                finished = job["status"] != "running"
-            if new_events:
-                for event in new_events:
-                    yield f"data: {json.dumps(event)}\n\n"
-            else:
-                yield ": keepalive\n\n"
-            if finished and idx >= len(job["events"]):
-                yield f"data: {json.dumps({'event': 'stream_end', 'status': job['status']})}\n\n"
-                break
-
-    return Response(
-        stream(),
-        mimetype="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    idx = 0
+    while True:
+        with job["lock"]:
+            job["cond"].wait_for(lambda: len(job["events"]) > idx or job["status"] != "running", timeout=15)
+            new_events = job["events"][idx:]
+            idx = len(job["events"])
+            finished = job["status"] != "running"
+        for event in new_events:
+            ws.send(json.dumps(event))
+        if finished and idx >= len(job["events"]):
+            ws.send(json.dumps({"event": "stream_end", "status": job["status"]}))
+            break
 
 
 @app.route("/api/download/<path:filename>")

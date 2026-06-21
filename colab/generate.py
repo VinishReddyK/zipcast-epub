@@ -580,6 +580,8 @@ def run_batch(
         )
         outputs.append(output_path)
 
-    _log(on_progress, f"all done: {len(outputs)} audiobook(s) generated")
+    # no _log() here: "all_done" already carries this info, and every consumer
+    # (browser GUI, notebook mirror loop) renders it from the structured event --
+    # logging it too would just print the same line a second time
     _emit(on_progress, {"event": "all_done", "outputs": [str(p) for p in outputs]})
     return outputs

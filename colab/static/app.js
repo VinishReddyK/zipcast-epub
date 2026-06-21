@@ -2,6 +2,7 @@ const $ = (id) => document.getElementById(id);
 
 let defaults = null;
 let books = [];
+let chapterCache = {}; // filename -> [{index, title}]
 
 function fmtEta(sec) {
   if (sec == null || !isFinite(sec)) return "eta: --";
@@ -51,31 +52,34 @@ async function loadBooks() {
 
   if (books.length === 0) {
     list.innerHTML = '<p class="muted">no .epub files yet -- upload one above.</p>';
-    return;
-  }
+  } else {
+    list.innerHTML = "";
+    for (const b of books) {
+      const row = document.createElement("label");
+      row.className = "book-row";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = true;
+      checkbox.dataset.filename = b.filename;
+      row.appendChild(checkbox);
 
-  list.innerHTML = "";
-  for (const b of books) {
-    const row = document.createElement("label");
-    row.className = "book-row";
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.checked = true;
-    checkbox.dataset.filename = b.filename;
-    row.appendChild(checkbox);
+      const meta = document.createElement("div");
+      meta.className = "book-meta";
+      if (b.error) {
+        meta.innerHTML = `<div class="book-title">${b.filename}</div><div class="book-sub error">${b.error}</div>`;
+        checkbox.disabled = true;
+        checkbox.checked = false;
+      } else {
+        meta.innerHTML = `<div class="book-title">${b.title}</div><div class="book-sub">${b.author} &middot; ${b.chapters} chapters</div>`;
+      }
+      row.appendChild(meta);
+      list.appendChild(row);
 
-    const meta = document.createElement("div");
-    meta.className = "book-meta";
-    if (b.error) {
-      meta.innerHTML = `<div class="book-title">${b.filename}</div><div class="book-sub error">${b.error}</div>`;
-      checkbox.disabled = true;
-      checkbox.checked = false;
-    } else {
-      meta.innerHTML = `<div class="book-title">${b.title}</div><div class="book-sub">${b.author} &middot; ${b.chapters} chapters</div>`;
+      checkbox.addEventListener("change", refreshChapterPickerBookOptions);
     }
-    row.appendChild(meta);
-    list.appendChild(row);
   }
+
+  refreshChapterPickerBookOptions();
 }
 
 function selectedEpubs() {
@@ -135,6 +139,91 @@ async function testVoice() {
     $("test-voice").disabled = false;
   }
 }
+
+// ---- chapter title/range picker (for continuation-numbered volumes, e.g.
+// epub "volume 2" whose first chapter title says "Chapter 270") ----
+
+async function getChapters(filename) {
+  if (!chapterCache[filename]) {
+    const res = await fetch(`/api/books/${encodeURIComponent(filename)}/chapters`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "failed to load chapters");
+    chapterCache[filename] = data.chapters;
+  }
+  return chapterCache[filename];
+}
+
+function refreshChapterPickerBookOptions() {
+  const sel = $("chapter-picker-book");
+  const checked = selectedEpubs();
+  const prev = sel.value;
+  sel.innerHTML = "";
+  for (const filename of checked) {
+    const book = books.find((b) => b.filename === filename);
+    const opt = document.createElement("option");
+    opt.value = filename;
+    opt.textContent = book ? book.title : filename;
+    sel.appendChild(opt);
+  }
+  if (checked.includes(prev)) sel.value = prev;
+
+  if (checked.length === 0) {
+    $("chapter-picker").classList.add("hidden");
+  } else {
+    $("chapter-picker").classList.remove("hidden");
+    loadChapterPicker();
+  }
+}
+
+async function loadChapterPicker() {
+  const filename = $("chapter-picker-book").value;
+  if (!filename) return;
+  $("chapter-search-status").textContent = "loading chapters...";
+  try {
+    const chapters = await getChapters(filename);
+    renderChapterOptions(chapters);
+    $("chapter-search-status").textContent = `${chapters.length} chapters`;
+  } catch (e) {
+    $("chapter-search-status").textContent = `error: ${e.message}`;
+  }
+}
+
+function renderChapterOptions(chapters) {
+  const query = $("chapter-search").value.trim().toLowerCase();
+  const filtered = query
+    ? chapters.filter((c) => c.title.toLowerCase().includes(query) || String(c.index).includes(query))
+    : chapters;
+
+  for (const selectId of ["chapter-from", "chapter-to"]) {
+    const sel = $(selectId);
+    const prev = sel.value;
+    sel.innerHTML = "";
+    for (const c of filtered) {
+      const opt = document.createElement("option");
+      opt.value = c.index;
+      opt.textContent = `${c.index}: ${c.title}`;
+      sel.appendChild(opt);
+    }
+    if (filtered.some((c) => String(c.index) === prev)) sel.value = prev;
+  }
+
+  if (filtered.length === 0) {
+    $("chapter-search-status").textContent = "no chapters match that search";
+  }
+}
+
+function applyChapterRange() {
+  const from = $("chapter-from").value;
+  const to = $("chapter-to").value;
+  if (!from || !to) return;
+  const fromN = parseInt(from, 10);
+  const toN = parseInt(to, 10);
+  const lo = Math.min(fromN, toN);
+  const hi = Math.max(fromN, toN);
+  $("chapters").value = lo === hi ? `${lo}` : `${lo}-${hi}`;
+}
+
+// ---- progress (websocket) ----
 
 function resetProgressUI() {
   $("progress-card").classList.remove("hidden");
@@ -218,6 +307,42 @@ function handleEvent(ev) {
   }
 }
 
+function wsUrlForJob(jobId) {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${location.host}/ws/jobs/${jobId}`;
+}
+
+function attachToJob(jobId) {
+  resetProgressUI();
+  $("start-job").disabled = true;
+
+  const ws = new WebSocket(wsUrlForJob(jobId));
+  ws.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    handleEvent(ev);
+    if (ev.event === "stream_end") ws.close();
+  };
+  ws.onerror = () => {
+    logLine("progress connection error", "err");
+  };
+  ws.onclose = () => {
+    $("start-job").disabled = false;
+  };
+}
+
+// on load, if a job is already running (e.g. the page was refreshed), the
+// websocket replays its full event history from the start, so progress
+// picks back up instead of resetting to nothing
+async function reattachIfJobRunning() {
+  try {
+    const res = await fetch("/api/jobs/active");
+    const data = await res.json();
+    if (data.job_id) attachToJob(data.job_id);
+  } catch {
+    // ignore -- just means we start with no job attached
+  }
+}
+
 async function startJob() {
   $("start-error").classList.add("hidden");
   const epubs = selectedEpubs();
@@ -239,7 +364,6 @@ async function startJob() {
   };
 
   $("start-job").disabled = true;
-  resetProgressUI();
 
   try {
     const res = await fetch("/api/jobs", {
@@ -249,18 +373,7 @@ async function startJob() {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `request failed (${res.status})`);
-
-    const events = new EventSource(`/api/jobs/${data.job_id}/events`);
-    events.onmessage = (msg) => {
-      const ev = JSON.parse(msg.data);
-      handleEvent(ev);
-      if (ev.event === "stream_end") events.close();
-    };
-    events.onerror = () => {
-      logLine("progress stream disconnected", "err");
-      $("start-job").disabled = false;
-      events.close();
-    };
+    attachToJob(data.job_id);
   } catch (e) {
     $("start-error").textContent = e.message;
     $("start-error").classList.remove("hidden");
@@ -268,13 +381,12 @@ async function startJob() {
   }
 }
 
+// ---- upload ----
+
 async function uploadBooks() {
   const input = $("upload-input");
   const files = input.files;
-  if (!files || files.length === 0) {
-    $("upload-status").textContent = "choose .epub file(s) first";
-    return;
-  }
+  if (!files || files.length === 0) return;
 
   const form = new FormData();
   for (const f of files) form.append("files", f);
@@ -305,8 +417,19 @@ window.addEventListener("DOMContentLoaded", () => {
   setupTabs();
   loadDefaults();
   loadBooks();
+  reattachIfJobRunning();
+
   $("refresh-books").addEventListener("click", loadBooks);
-  $("upload-btn").addEventListener("click", uploadBooks);
+  // clicking "upload" opens the OS file picker directly; choosing files
+  // uploads immediately, no separate "upload" click needed afterward
+  $("upload-btn").addEventListener("click", () => $("upload-input").click());
+  $("upload-input").addEventListener("change", uploadBooks);
+
+  $("chapter-picker-book").addEventListener("change", loadChapterPicker);
+  $("chapter-search").addEventListener("input", () => getChapters($("chapter-picker-book").value).then(renderChapterOptions));
+  $("chapter-from").addEventListener("change", applyChapterRange);
+  $("chapter-to").addEventListener("change", applyChapterRange);
+
   $("test-voice").addEventListener("click", testVoice);
   $("start-job").addEventListener("click", startJob);
 });

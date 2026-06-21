@@ -17,9 +17,15 @@ driven by a small web GUI instead of editing notebook cells.
    "quick tunnel" to it (no account, no signup, no auth token) and prints a
    `https://*.trycloudflare.com` link.
 4. Open that link. From the page:
-   - **Upload** one or more `.epub` files (or drag them into the Colab Files
+   - Click **upload .epub(s)** -- it opens your file picker directly and
+     uploads as soon as you choose files (or drag them into the Colab Files
      panel beforehand -- either works, the GUI lists whatever's in `/content`).
    - Pick which **chapters** to convert (`all`, `5`, `1-10`, `1,3,5-8`, ...).
+     For books where the chapter numbering is positional within the file but
+     the titles carry a series-wide number (e.g. volume 2 of a series whose
+     first chapter is titled "Chapter 270"), use the chapter picker below the
+     range field: search by title, then pick From/To by what's actually
+     printed in the book -- it fills in the right range for you.
    - Tune **chunk size** (characters of text per TTS call) and **batch size**
      (how many chunks get synthesized together -- higher is faster but uses
      more GPU memory; drop it if you hit a CUDA OOM on a free T4).
@@ -27,7 +33,10 @@ driven by a small web GUI instead of editing notebook cells.
      free text and click **test voice** to hear a preview before committing
      a whole book to it.
    - Click **Start conversion** and watch the live progress bar, ETA, and
-     chunks/sec throughput. Each book gets a download link as soon as it's done.
+     chunks/sec throughput (delivered over a WebSocket, so it updates as it
+     happens rather than in laggy bursts). Each book gets a download link as
+     soon as it's done. If you refresh the page mid-conversion, it reattaches
+     to the running job and replays everything that's happened so far.
 
 Processing is resumable at two levels: re-running the conversion skips chapters
 whose `.wav` already exists under `/content/zipcast_work/<book>/wav`, and skips
@@ -41,8 +50,8 @@ doesn't mean starting over.
   selected chapter upfront, for accurate progress/ETA), synthesize with
   Qwen3-TTS (named speaker or free-form voice description), build the m4b.
 - `colab/webapp.py` -- the Flask backend: book listing, upload, job
-  orchestration, live progress over Server-Sent Events, voice-description
-  preview, file download.
+  orchestration, live progress over WebSocket, per-book chapter listing
+  (for the title-based range picker), voice-description preview, file download.
 - `colab/static/` -- the GUI itself (plain HTML/CSS/JS, no build step).
 - `notebooks/colab_zipcast_qwen3tts.ipynb` -- clones this repo, installs
   dependencies, and launches the GUI + tunnel.
