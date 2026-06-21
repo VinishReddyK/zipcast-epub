@@ -227,6 +227,12 @@ def api_start_job():
     return jsonify({"job_id": job_id})
 
 
+@app.route("/api/jobs/active")
+def api_active_job():
+    with _jobs_lock:
+        return jsonify({"job_id": _active_job_id})
+
+
 @app.route("/api/jobs/<job_id>")
 def api_job_status(job_id: str):
     job = _jobs.get(job_id)
