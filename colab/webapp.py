@@ -68,7 +68,11 @@ def _device() -> str:
     try:
         import torch
 
-        return "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            return "cuda"
+        if torch.backends.mps.is_available():  # Apple Silicon, when running locally
+            return "mps"
+        return "cpu"
     except ImportError:
         return "cpu"
 

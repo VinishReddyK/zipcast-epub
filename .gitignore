@@ -5,3 +5,4 @@ __pycache__/
 *.zip
 *.m4b
 .DS_Store
+/zipcast_content/

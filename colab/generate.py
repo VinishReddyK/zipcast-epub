@@ -12,6 +12,7 @@ Designed to be imported from the companion notebook or the web GUI
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import time
@@ -49,7 +50,7 @@ def _log(on_progress: ProgressCallback | None, message: str) -> None:
     event so the web GUI -- which can't rely on seeing a background thread's
     stdout in the notebook cell output -- shows every message too.
     """
-    print(message)
+    print(message, flush=True)
     _emit(on_progress, {"event": "log", "message": message})
 
 
@@ -166,6 +167,10 @@ def _select_dtype(torch, device: str):
 
 def _quiet_transformers_logging() -> None:
     import transformers  # type: ignore
+
+    if os.environ.get("ZIPCAST_MODEL_LOGS", "").lower() in {"1", "true", "yes"}:
+        transformers.logging.set_verbosity_info()
+        return
 
     # silences the "Setting `pad_token_id` to `eos_token_id`..." notice that
     # transformers' generate() logs on every call -- harmless, but with chunks

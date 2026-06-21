@@ -45,6 +45,27 @@ whose `.wav` already exists under `/content/zipcast_work/<book>/wav`, and skips
 books whose `.m4b` already exists in `/content` -- so a dropped Colab session
 doesn't mean starting over.
 
+## Running locally (no Colab)
+
+If you have a machine with a GPU (or just want to test on CPU/Apple Silicon),
+skip Colab entirely:
+
+```sh
+pip install -r colab/requirements.txt
+python3 run_local.py
+```
+
+This starts the same GUI bound to `localhost` (no tunnel needed), and opens it
+in your browser. Drop `.epub` files into the printed `zipcast_content/` folder
+(created next to `run_local.py`, gitignored) or upload them from the page,
+same as in Colab. The model loads when conversion starts so its load/progress
+logs appear in the page. It picks up a CUDA GPU, an Apple Silicon GPU (`mps`),
+or falls back to CPU automatically. Override the port with `ZIPCAST_PORT`, or
+the content folder with `ZIPCAST_CONTENT_DIR`.
+
+For old eager-loading behavior, run with `ZIPCAST_PRELOAD=1`. For lower-level
+Transformers model logs, run with `ZIPCAST_MODEL_LOGS=1`.
+
 ## project layout
 
 - `zipcast/epub_parser.py` -- epub parsing (chapters, metadata, cover art).
