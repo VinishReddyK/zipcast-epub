@@ -2,12 +2,19 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VinishReddyK/zipcast-epub/blob/main/notebooks/colab_zipcast_qwen3tts.ipynb)
 
-epub &rarr; audiobook `.m4b`, entirely on a free Colab GPU, via [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS),
+epub &rarr; audiobook `.m4b` on a free notebook GPU, via [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS),
 driven by a small web GUI instead of editing notebook cells.
+
+Notebooks:
+
+- [Colab notebook](notebooks/colab_zipcast_qwen3tts.ipynb)
+- [Kaggle notebook](notebooks/kaggle_zipcast_qwen3tts.ipynb)
 
 ## Usage
 
-1. Open the notebook in Colab using the badge above, or directly:
+### Colab
+
+1. Open the notebook in Colab using the badge above, the notebook link above, or directly:
    https://colab.research.google.com/github/VinishReddyK/zipcast-epub/blob/main/notebooks/colab_zipcast_qwen3tts.ipynb
 2. Set **Runtime > Change runtime type > T4 GPU**.
 3. Run every cell top to bottom. One cell **preloads the Qwen3-TTS model**
@@ -45,6 +52,19 @@ whose `.wav` already exists under `/content/zipcast_work/<book>/wav`, and skips
 books whose `.m4b` already exists in `/content` -- so a dropped Colab session
 doesn't mean starting over.
 
+### Kaggle
+
+Use [notebooks/kaggle_zipcast_qwen3tts.ipynb](notebooks/kaggle_zipcast_qwen3tts.ipynb)
+if Colab is busy or you prefer Kaggle.
+
+1. Create or open a Kaggle notebook from that `.ipynb`.
+2. In notebook settings, enable a GPU accelerator and turn **Internet** on.
+3. Run every cell top to bottom. The launch cell starts the same GUI and prints
+   a temporary `https://*.trycloudflare.com` link.
+4. Open the link, upload `.epub` files, and start conversion. Outputs are
+   written under `/kaggle/working/zipcast_content`, so they also appear in the
+   Kaggle output files panel.
+
 ## Running locally (no Colab)
 
 If you have a machine with a GPU (or just want to test on CPU/Apple Silicon),
@@ -80,9 +100,11 @@ Transformers model logs, run with `ZIPCAST_MODEL_LOGS=1`.
 - `colab/static/` -- the GUI itself (plain HTML/CSS/JS, no build step).
 - `notebooks/colab_zipcast_qwen3tts.ipynb` -- clones this repo, installs
   dependencies, and launches the GUI + tunnel.
+- `notebooks/kaggle_zipcast_qwen3tts.ipynb` -- Kaggle version of the same
+  setup, using `/kaggle/working` paths and the same GUI + tunnel flow.
 
 ## requirements
 
-- Colab: GPU runtime. `ffmpeg`, `qwen-tts`, `torch`, `flask`, `ebooklib` etc.
-  are all installed in-notebook from `colab/requirements.txt` -- no local
-  setup required.
+- Colab or Kaggle: GPU runtime plus Internet access. `ffmpeg`, `qwen-tts`,
+  `torch`, `flask`, `ebooklib` etc. are installed in-notebook from
+  `colab/requirements.txt` -- no local setup required.
