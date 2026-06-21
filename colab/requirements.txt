@@ -1,0 +1,5 @@
+qwen-tts>=0.0.4
+torch
+torchaudio
+soundfile>=0.12
+tqdm>=4.66

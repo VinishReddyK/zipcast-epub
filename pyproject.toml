@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zipcast"
+version = "0.1.0"
+description = "parse an epub into clean chapter text and pack it into a zip for Colab-side TTS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+]
+
+[project.scripts]
+zipcast = "zipcast.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["zipcast*"]
