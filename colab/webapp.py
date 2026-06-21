@@ -17,6 +17,7 @@ import io
 import json
 import logging
 import os
+import subprocess
 import threading
 import time
 import uuid
@@ -30,7 +31,9 @@ from . import generate
 
 CONTENT_DIR = Path(os.environ.get("ZIPCAST_CONTENT_DIR", "/content"))
 WORK_DIR = Path(os.environ.get("ZIPCAST_WORK_DIR", str(CONTENT_DIR / "zipcast_work")))
+VOICES_DIR = Path(os.environ.get("ZIPCAST_VOICES_DIR", str(CONTENT_DIR / "zipcast_voices")))
 STATIC_DIR = Path(__file__).parent / "static"
+ALLOWED_AUDIO_EXTS = {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm"}
 
 app = Flask(__name__, static_folder=str(STATIC_DIR), static_url_path="/static")
 sock = Sock(app)
@@ -56,7 +59,8 @@ _active_job_id: str | None = None
 # engines are loaded once and cached for the life of the process -- loading
 # takes minutes, so reloading per job (or per voice-test click) would be a
 # multi-minute tax every single time. keyed by (kind, model_name, device).
-_engine_cache: dict[tuple[str, str, str], object] = {}
+EngineUnion = generate.Qwen3TTSEngine | generate.Qwen3VoiceDesignEngine | generate.Qwen3VoiceCloneEngine
+_engine_cache: dict[tuple[str, str, str], EngineUnion] = {}
 _engine_lock = threading.Lock()
 
 
@@ -69,14 +73,16 @@ def _device() -> str:
         return "cpu"
 
 
-def _get_or_load_engine(kind: str, model_name: str, device: str, on_progress=None):
-    """kind is 'preset' (CustomVoice) or 'design' (VoiceDesign)."""
+def _get_or_load_engine(kind: str, model_name: str, device: str, on_progress=None) -> EngineUnion:
+    """kind is 'preset' (CustomVoice), 'design' (VoiceDesign), or 'clone' (Base)."""
     key = (kind, model_name, device)
     with _engine_lock:
         engine = _engine_cache.get(key)
         if engine is None:
             if kind == "design":
                 engine = generate.Qwen3VoiceDesignEngine(model_name=model_name, device=device, on_progress=on_progress)
+            elif kind == "clone":
+                engine = generate.Qwen3VoiceCloneEngine(model_name=model_name, device=device, on_progress=on_progress)
             else:
                 engine = generate.Qwen3TTSEngine(model_name=model_name, device=device, on_progress=on_progress)
             _engine_cache[key] = engine
@@ -158,6 +164,45 @@ def api_upload():
     return jsonify({"saved": saved, "rejected": rejected})
 
 
+@app.route("/api/upload-voice", methods=["POST"])
+def api_upload_voice():
+    f = request.files.get("file")
+    if f is None or not f.filename:
+        return jsonify({"error": "no file in request"}), 400
+
+    filename = secure_filename(f.filename)
+    ext = Path(filename).suffix.lower()
+    if ext not in ALLOWED_AUDIO_EXTS:
+        return jsonify({"error": f"unsupported audio type: {ext or '(none)'}"}), 400
+
+    VOICES_DIR.mkdir(parents=True, exist_ok=True)
+    raw_path = VOICES_DIR / f"_raw_{uuid.uuid4().hex[:8]}{ext}"
+    f.save(raw_path)
+
+    # normalize to a clean mono wav at the model's expected sample rate, so
+    # soundfile can always read it back later regardless of what format/rate
+    # the browser originally captured or the user originally uploaded
+    out_name = f"{Path(filename).stem}_{uuid.uuid4().hex[:8]}.wav"
+    out_path = VOICES_DIR / out_name
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(raw_path), "-ar", str(generate.SAMPLE_RATE), "-ac", "1", str(out_path)],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as e:
+        return jsonify({"error": f"could not process audio: {e.stderr.decode(errors='replace')[-500:]}"}), 400
+    finally:
+        raw_path.unlink(missing_ok=True)
+
+    return jsonify({"filename": out_name})
+
+
+@app.route("/api/voices/<path:filename>")
+def api_voice_file(filename: str):
+    return send_from_directory(VOICES_DIR, filename)
+
+
 @app.route("/api/defaults")
 def api_defaults():
     return jsonify({
@@ -165,6 +210,7 @@ def api_defaults():
         "default_speaker": generate.DEFAULT_SPEAKER,
         "model_name": generate.DEFAULT_MODEL,
         "design_model_name": generate.VOICE_DESIGN_MODEL,
+        "clone_model_name": generate.VOICE_CLONE_MODEL,
         "chunk_chars": generate.DEFAULT_CHUNK_CHARS,
         "batch_size": generate.DEFAULT_BATCH_SIZE,
         "voice_test_text": generate.DEFAULT_VOICE_TEST_TEXT,
@@ -183,8 +229,41 @@ def api_voice_test():
 
     device = _device()
     engine = _get_or_load_engine("design", model_name, device)
+    assert isinstance(engine, generate.Qwen3VoiceDesignEngine)
     try:
         audio, sr = engine.design_sample(sample_text, description)
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": str(e)}), 500
+
+    import soundfile as sf
+
+    buf = io.BytesIO()
+    sf.write(buf, audio, sr, format="WAV")
+    buf.seek(0)
+    return send_file(buf, mimetype="audio/wav")
+
+
+@app.route("/api/voice-test-clone", methods=["POST"])
+def api_voice_test_clone():
+    body = request.get_json(force=True) or {}
+    ref_audio_name = secure_filename(body.get("filename") or "")
+    ref_text = (body.get("ref_text") or "").strip()
+    sample_text = (body.get("sample_text") or generate.DEFAULT_VOICE_TEST_TEXT).strip()
+    model_name = body.get("model_name") or generate.VOICE_CLONE_MODEL
+
+    if not ref_audio_name:
+        return jsonify({"error": "filename is required"}), 400
+    ref_audio_path = (VOICES_DIR / ref_audio_name).resolve()
+    if ref_audio_path.parent != VOICES_DIR.resolve() or not ref_audio_path.exists():
+        return jsonify({"error": "unknown voice clip"}), 404
+    if not ref_text:
+        return jsonify({"error": "ref_text (the clip's transcript) is required"}), 400
+
+    device = _device()
+    engine = _get_or_load_engine("clone", model_name, device)
+    assert isinstance(engine, generate.Qwen3VoiceCloneEngine)
+    try:
+        audio, sr = engine.clone_sample(sample_text, str(ref_audio_path), ref_text)
     except Exception as e:  # noqa: BLE001
         return jsonify({"error": str(e)}), 500
 
@@ -217,9 +296,13 @@ def _run_job(job_id: str, kwargs: dict) -> None:
         # reuse the cached/preloaded engine instead of loading a fresh one for
         # every job -- loading takes minutes, this should be a one-time cost
         device = kwargs.get("device", "cpu")
-        if kwargs.get("voice_mode") == "design":
+        voice_mode = kwargs.get("voice_mode")
+        if voice_mode == "design":
             model_name = kwargs.get("design_model_name", generate.VOICE_DESIGN_MODEL)
             engine = _get_or_load_engine("design", model_name, device, on_progress=on_progress)
+        elif voice_mode == "clone":
+            model_name = kwargs.get("clone_model_name", generate.VOICE_CLONE_MODEL)
+            engine = _get_or_load_engine("clone", model_name, device, on_progress=on_progress)
         else:
             model_name = kwargs.get("model_name", generate.DEFAULT_MODEL)
             engine = _get_or_load_engine("preset", model_name, device, on_progress=on_progress)
@@ -259,17 +342,31 @@ def api_start_job():
                 return jsonify({"error": f"epub(s) not found in {CONTENT_DIR}: {', '.join(missing)}"}), 400
             epub_paths = [str(CONTENT_DIR / name) for name in requested]
 
+        voice_mode = body.get("voice_mode", "preset")
+        ref_audio_path = ""
+        if voice_mode == "clone":
+            ref_audio_name = secure_filename(body.get("ref_audio_filename") or "")
+            ref_audio_full = (VOICES_DIR / ref_audio_name).resolve() if ref_audio_name else None
+            if not ref_audio_name or not ref_audio_full or not ref_audio_full.exists():
+                return jsonify({"error": "upload a reference voice clip first"}), 400
+            if not (body.get("ref_text") or "").strip():
+                return jsonify({"error": "the reference clip's transcript (ref_text) is required"}), 400
+            ref_audio_path = str(ref_audio_full)
+
         kwargs = {
             "epub_paths": epub_paths,
             "chapters": body.get("chapters", "all"),
             "chunk_chars": int(body.get("chunk_chars", generate.DEFAULT_CHUNK_CHARS)),
             "batch_size": int(body.get("batch_size", generate.DEFAULT_BATCH_SIZE)),
             "device": _device(),
-            "voice_mode": body.get("voice_mode", "preset"),
+            "voice_mode": voice_mode,
             "speaker": body.get("speaker", generate.DEFAULT_SPEAKER),
             "voice_description": body.get("voice_description", ""),
+            "ref_audio_path": ref_audio_path,
+            "ref_text": (body.get("ref_text") or "").strip(),
             "model_name": body.get("model_name", generate.DEFAULT_MODEL),
             "design_model_name": body.get("design_model_name", generate.VOICE_DESIGN_MODEL),
+            "clone_model_name": body.get("clone_model_name", generate.VOICE_CLONE_MODEL),
         }
 
         job_id = uuid.uuid4().hex[:12]

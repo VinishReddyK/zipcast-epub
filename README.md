@@ -29,9 +29,11 @@ driven by a small web GUI instead of editing notebook cells.
    - Tune **chunk size** (characters of text per TTS call) and **batch size**
      (how many chunks get synthesized together -- higher is faster but uses
      more GPU memory; drop it if you hit a CUDA OOM on a free T4).
-   - Pick a **voice**: either a built-in named speaker, or describe one in
-     free text and click **test voice** to hear a preview before committing
-     a whole book to it.
+   - Pick a **voice**: a built-in named speaker, a free-form text description
+     (click **test voice** to preview it), or **clone one from an uploaded
+     clip** -- a few seconds of clear speech plus its exact transcript (the
+     model needs that to align the clone). **test clone** previews it the
+     same way before you commit a whole book to it.
    - Click **Start conversion** and watch the live progress bar, ETA, and
      chunks/sec throughput (delivered over a WebSocket, so it updates as it
      happens rather than in laggy bursts). Each book gets a download link as
@@ -48,10 +50,12 @@ doesn't mean starting over.
 - `zipcast/epub_parser.py` -- epub parsing (chapters, metadata, cover art).
 - `colab/generate.py` -- the conversion pipeline: plan (parse + chunk every
   selected chapter upfront, for accurate progress/ETA), synthesize with
-  Qwen3-TTS (named speaker or free-form voice description), build the m4b.
-- `colab/webapp.py` -- the Flask backend: book listing, upload, job
-  orchestration, live progress over WebSocket, per-book chapter listing
-  (for the title-based range picker), voice-description preview, file download.
+  Qwen3-TTS (named speaker, free-form voice description, or a voice cloned
+  from a reference clip), build the m4b.
+- `colab/webapp.py` -- the Flask backend: book listing, epub + reference-clip
+  upload (clips get normalized through ffmpeg on upload), job orchestration,
+  live progress over WebSocket, per-book chapter listing (for the title-based
+  range picker), voice preview (description or clone), file download.
 - `colab/static/` -- the GUI itself (plain HTML/CSS/JS, no build step).
 - `notebooks/colab_zipcast_qwen3tts.ipynb` -- clones this repo, installs
   dependencies, and launches the GUI + tunnel.

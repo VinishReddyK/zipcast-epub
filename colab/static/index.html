@@ -87,6 +87,7 @@
     <div class="tabs">
       <button class="tab active" data-mode="preset">Preset speaker</button>
       <button class="tab" data-mode="design">Describe a voice</button>
+      <button class="tab" data-mode="clone">Clone a voice</button>
     </div>
 
     <div id="voice-preset" class="voice-panel">
@@ -110,6 +111,35 @@
         <span id="voice-test-status" class="muted"></span>
       </div>
       <audio id="voice-test-audio" controls class="hidden"></audio>
+    </div>
+
+    <div id="voice-clone" class="voice-panel hidden">
+      <small class="muted">
+        Clones the voice from a short reference clip (a few seconds of clear
+        speech is enough). You must also type exactly what's said in the clip
+        -- the model uses it to align the clone.
+      </small>
+
+      <div class="upload-row">
+        <input type="file" id="clone-upload-input" accept=".wav,.mp3,.m4a,.ogg,.flac" class="hidden">
+        <button class="btn" id="clone-upload-btn">upload reference clip</button>
+        <span id="clone-upload-status" class="muted"></span>
+      </div>
+      <audio id="clone-reference-audio" controls class="hidden"></audio>
+
+      <label class="field">
+        <span>Reference clip transcript</span>
+        <textarea id="clone-ref-text" rows="2" placeholder="type exactly what is spoken in the uploaded clip"></textarea>
+      </label>
+      <label class="field">
+        <span>Preview line <small class="muted">(optional)</small></span>
+        <input type="text" id="clone-test-text" placeholder="Hello, this is a preview of how this voice sounds when reading your book.">
+      </label>
+      <div class="row">
+        <button class="btn" id="test-clone">test clone</button>
+        <span id="clone-test-status" class="muted"></span>
+      </div>
+      <audio id="clone-test-audio" controls class="hidden"></audio>
     </div>
   </section>
 

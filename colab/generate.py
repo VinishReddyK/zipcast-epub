@@ -29,6 +29,7 @@ DEFAULT_BATCH_SIZE = 10
 PARAGRAPH_PAUSE_MS = 500
 DEFAULT_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"
 VOICE_DESIGN_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+VOICE_CLONE_MODEL = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
 DEFAULT_SPEAKER = "ryan"
 BUILTIN_SPEAKERS = ["ryan", "vivian", "sunny", "aria", "bella", "nova", "echo", "finn", "atlas"]
 DEFAULT_VOICE_TEST_TEXT = "Hello, this is a preview of how this voice sounds when reading your book."
@@ -255,6 +256,64 @@ class Qwen3VoiceDesignEngine:
 
     def design_sample(self, text: str, instruct: str) -> tuple[np.ndarray, int]:
         wavs, sr = self.synthesize_batch([text], instruct=instruct)
+        return wavs[0], sr
+
+    def unload(self) -> None:
+        del self.model
+        if self._torch.cuda.is_available():
+            self._torch.cuda.empty_cache()
+
+
+class Qwen3VoiceCloneEngine:
+    """voice-cloning engine (Qwen3-TTS Base model): clones a voice from a
+    short reference audio clip plus the exact text spoken in it.
+
+    like CustomVoice, generate_voice_clone() accepts a whole list of texts in
+    one call, so this supports the same chunk-batching as the preset-speaker
+    engine (unlike VoiceDesign, which only takes one text at a time).
+    """
+
+    def __init__(
+        self,
+        model_name: str = VOICE_CLONE_MODEL,
+        device: str = "cuda",
+        batch_size: int = DEFAULT_BATCH_SIZE,
+        on_progress: ProgressCallback | None = None,
+    ):
+        import torch
+        from qwen_tts import Qwen3TTSModel  # type: ignore
+
+        _quiet_transformers_logging()
+        self._torch = torch
+        self.batch_size = max(1, batch_size)
+        self._ref_audio_cache: dict[str, tuple[np.ndarray, int]] = {}
+        dtype = _select_dtype(torch, device)
+        _log(on_progress, f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
+        self.model = Qwen3TTSModel.from_pretrained(
+            model_name, device_map=device, dtype=dtype, attn_implementation="sdpa"
+        )
+        _log(on_progress, "model loaded.")
+
+    def _load_ref_audio(self, ref_audio_path: str) -> tuple[np.ndarray, int]:
+        cached = self._ref_audio_cache.get(ref_audio_path)
+        if cached is None:
+            data, sr = sf.read(ref_audio_path)
+            cached = (data, sr)
+            self._ref_audio_cache[ref_audio_path] = cached
+        return cached
+
+    def synthesize_batch(
+        self, batch: list[str], ref_audio_path: str = "", ref_text: str = ""
+    ) -> tuple[list[np.ndarray], int]:
+        ref_audio = self._load_ref_audio(ref_audio_path)
+        with self._torch.inference_mode():
+            wavs, sr = self.model.generate_voice_clone(text=batch, ref_audio=ref_audio, ref_text=ref_text)
+        if isinstance(wavs, np.ndarray):
+            wavs = [wavs]
+        return list(wavs), sr
+
+    def clone_sample(self, text: str, ref_audio_path: str, ref_text: str) -> tuple[np.ndarray, int]:
+        wavs, sr = self.synthesize_batch([text], ref_audio_path=ref_audio_path, ref_text=ref_text)
         return wavs[0], sr
 
     def unload(self) -> None:
@@ -509,6 +568,16 @@ def synthesize_book(
     return plan.output_path
 
 
+def _build_voice_kwargs(
+    voice_mode: str, speaker: str, voice_description: str, ref_audio_path: str, ref_text: str
+) -> dict:
+    if voice_mode == "design":
+        return {"instruct": voice_description}
+    if voice_mode == "clone":
+        return {"ref_audio_path": ref_audio_path, "ref_text": ref_text}
+    return {"speaker": speaker}
+
+
 def run_batch(
     content_dir: str | Path = "/content",
     work_dir: str | Path = "/content/zipcast_work",
@@ -520,17 +589,22 @@ def run_batch(
     voice_mode: str = "preset",
     speaker: str = DEFAULT_SPEAKER,
     voice_description: str = "",
+    ref_audio_path: str = "",
+    ref_text: str = "",
     model_name: str = DEFAULT_MODEL,
     design_model_name: str = VOICE_DESIGN_MODEL,
-    engine: "Qwen3TTSEngine | Qwen3VoiceDesignEngine | None" = None,
+    clone_model_name: str = VOICE_CLONE_MODEL,
+    engine: "Qwen3TTSEngine | Qwen3VoiceDesignEngine | Qwen3VoiceCloneEngine | None" = None,
     on_progress: ProgressCallback | None = None,
 ) -> list[Path]:
     """find every .epub in content_dir (or use epub_paths) and turn each into an
     .m4b, one after another, reporting progress via on_progress(event_dict).
 
     voice_mode "preset" uses a built-in named speaker (e.g. "ryan") via the
-    CustomVoice model; voice_mode "design" narrates with a free-form voice
-    description via the VoiceDesign model instead.
+    CustomVoice model; "design" narrates with a free-form voice description
+    via the VoiceDesign model; "clone" narrates in a voice cloned from a
+    reference audio clip (ref_audio_path) plus its exact transcript (ref_text)
+    via the Base model.
     """
     content_dir = Path(content_dir)
     work_dir = Path(work_dir)
@@ -557,20 +631,23 @@ def run_batch(
         _emit(on_progress, {"event": "all_done", "outputs": []})
         return []
 
+    voice_kwargs = _build_voice_kwargs(voice_mode, speaker, voice_description, ref_audio_path, ref_text)
+
     if engine is not None:
         # reuse a pre-loaded engine (e.g. preloaded before the GUI/tunnel even
         # started) instead of paying the multi-minute load cost on every job
-        if isinstance(engine, Qwen3TTSEngine):
+        if isinstance(engine, (Qwen3TTSEngine, Qwen3VoiceCloneEngine)):
             engine.batch_size = max(1, batch_size)
-        voice_kwargs = {"instruct": voice_description} if voice_mode == "design" else {"speaker": speaker}
     elif voice_mode == "design":
         engine = Qwen3VoiceDesignEngine(model_name=design_model_name, device=device, on_progress=on_progress)
-        voice_kwargs = {"instruct": voice_description}
+    elif voice_mode == "clone":
+        engine = Qwen3VoiceCloneEngine(
+            model_name=clone_model_name, device=device, batch_size=batch_size, on_progress=on_progress
+        )
     else:
         engine = Qwen3TTSEngine(
             model_name=model_name, device=device, batch_size=batch_size, on_progress=on_progress
         )
-        voice_kwargs = {"speaker": speaker}
 
     run_state = {"chunks_done": 0, "start_time": time.monotonic()}
     outputs = []

@@ -3,6 +3,7 @@ const $ = (id) => document.getElementById(id);
 let defaults = null;
 let books = [];
 let chapterCache = {}; // filename -> [{index, title}]
+let clonedVoiceFilename = null;
 
 function fmtEta(sec) {
   if (sec == null || !isFinite(sec)) return "eta: --";
@@ -96,6 +97,7 @@ function setupTabs() {
       const mode = tab.dataset.mode;
       $("voice-preset").classList.toggle("hidden", mode !== "preset");
       $("voice-design").classList.toggle("hidden", mode !== "design");
+      $("voice-clone").classList.toggle("hidden", mode !== "clone");
     });
   });
 }
@@ -137,6 +139,79 @@ async function testVoice() {
     $("voice-test-status").textContent = `error: ${e.message}`;
   } finally {
     $("test-voice").disabled = false;
+  }
+}
+
+// ---- clone-a-voice tab ----
+
+async function uploadCloneVoice() {
+  const input = $("clone-upload-input");
+  const file = input.files && input.files[0];
+  if (!file) return;
+
+  const form = new FormData();
+  form.append("file", file);
+
+  $("clone-upload-btn").disabled = true;
+  $("clone-upload-status").textContent = "uploading + normalizing...";
+
+  try {
+    const res = await fetch("/api/upload-voice", { method: "POST", body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `upload failed (${res.status})`);
+
+    clonedVoiceFilename = data.filename;
+    $("clone-upload-status").textContent = `uploaded: ${data.filename}`;
+
+    const audio = $("clone-reference-audio");
+    audio.src = `/api/voices/${encodeURIComponent(data.filename)}`;
+    audio.classList.remove("hidden");
+  } catch (e) {
+    clonedVoiceFilename = null;
+    $("clone-upload-status").textContent = `error: ${e.message}`;
+  } finally {
+    $("clone-upload-btn").disabled = false;
+    input.value = "";
+  }
+}
+
+async function testClone() {
+  if (!clonedVoiceFilename) {
+    $("clone-test-status").textContent = "upload a reference clip first";
+    return;
+  }
+  const refText = $("clone-ref-text").value.trim();
+  if (!refText) {
+    $("clone-test-status").textContent = "type the reference clip's transcript first";
+    return;
+  }
+  const sampleText = $("clone-test-text").value.trim() || undefined;
+
+  $("test-clone").disabled = true;
+  $("clone-test-status").textContent = "loading voice-clone model + generating (first run can take a few minutes)...";
+  $("clone-test-audio").classList.add("hidden");
+
+  try {
+    const res = await fetch("/api/voice-test-clone", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: clonedVoiceFilename, ref_text: refText, sample_text: sampleText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || `request failed (${res.status})`);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = $("clone-test-audio");
+    audio.src = url;
+    audio.classList.remove("hidden");
+    audio.play().catch(() => {});
+    $("clone-test-status").textContent = "done.";
+  } catch (e) {
+    $("clone-test-status").textContent = `error: ${e.message}`;
+  } finally {
+    $("test-clone").disabled = false;
   }
 }
 
@@ -353,6 +428,17 @@ async function startJob() {
   }
 
   const mode = currentVoiceMode();
+  if (mode === "clone" && !clonedVoiceFilename) {
+    $("start-error").textContent = "upload a reference voice clip first (Voice > Clone a voice)";
+    $("start-error").classList.remove("hidden");
+    return;
+  }
+  if (mode === "clone" && !$("clone-ref-text").value.trim()) {
+    $("start-error").textContent = "type the reference clip's transcript first (Voice > Clone a voice)";
+    $("start-error").classList.remove("hidden");
+    return;
+  }
+
   const body = {
     epubs,
     chapters: $("chapters").value.trim() || "all",
@@ -361,6 +447,8 @@ async function startJob() {
     voice_mode: mode,
     speaker: $("speaker").value,
     voice_description: $("voice-description").value.trim(),
+    ref_audio_filename: clonedVoiceFilename,
+    ref_text: $("clone-ref-text").value.trim(),
   };
 
   $("start-job").disabled = true;
@@ -431,5 +519,10 @@ window.addEventListener("DOMContentLoaded", () => {
   $("chapter-to").addEventListener("change", applyChapterRange);
 
   $("test-voice").addEventListener("click", testVoice);
+
+  $("clone-upload-btn").addEventListener("click", () => $("clone-upload-input").click());
+  $("clone-upload-input").addEventListener("change", uploadCloneVoice);
+  $("test-clone").addEventListener("click", testClone);
+
   $("start-job").addEventListener("click", startJob);
 });
