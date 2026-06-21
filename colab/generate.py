@@ -116,11 +116,16 @@ def _select_dtype(torch, device: str):
 class Qwen3TTSEngine:
     """thin wrapper around the `qwen-tts` package for chapter-by-chapter synthesis."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, device: str = "cuda"):
+    def __init__(self, model_name: str = DEFAULT_MODEL, device: str = "cuda", batch_size: int = 4):
         import torch
         from qwen_tts import Qwen3TTSModel  # type: ignore
 
         self._torch = torch
+        # cap how many chunks go into one generate_custom_voice() call: peak GPU
+        # memory scales with batch size x max_new_tokens, so batching a whole
+        # chapter's chunks at once (the naive approach) OOMs on long chapters
+        # even on a 14-16GiB T4.
+        self.batch_size = max(1, batch_size)
         dtype = _select_dtype(torch, device)
         print(f"loading {model_name} on {device} ({dtype})... this can take a few minutes.")
         self.model = Qwen3TTSModel.from_pretrained(
@@ -129,13 +134,18 @@ class Qwen3TTSEngine:
         print("model loaded.")
 
     def synthesize(self, text_chunks: list[str], speaker: str) -> tuple[np.ndarray, int]:
-        with self._torch.inference_mode():
-            wavs, sr = self.model.generate_custom_voice(
-                text=text_chunks, speaker=speaker, instruct="", max_new_tokens=2048
-            )
-        if isinstance(wavs, np.ndarray):
-            wavs = [wavs]
-        return concatenate_audio(list(wavs), sr, PARAGRAPH_PAUSE_MS), sr
+        audio_batches: list[np.ndarray] = []
+        sample_rate = SAMPLE_RATE
+        for i in range(0, len(text_chunks), self.batch_size):
+            batch = text_chunks[i : i + self.batch_size]
+            with self._torch.inference_mode():
+                wavs, sample_rate = self.model.generate_custom_voice(
+                    text=batch, speaker=speaker, instruct="", max_new_tokens=2048
+                )
+            if isinstance(wavs, np.ndarray):
+                wavs = [wavs]
+            audio_batches.extend(wavs)
+        return concatenate_audio(audio_batches, sample_rate, PARAGRAPH_PAUSE_MS), sample_rate
 
 
 def synthesize_chapters(
@@ -163,6 +173,11 @@ def synthesize_chapters(
         audio, sr = engine.synthesize(chunks, speaker)
         sf.write(str(wav_path), audio, sr)
         wav_paths.append(wav_path)
+
+        # release cached allocator blocks between chapters so reserved-but-unused
+        # memory doesn't fragment and accumulate over a long (e.g. 270-chapter) run
+        if engine._torch.cuda.is_available():
+            engine._torch.cuda.empty_cache()
     return wav_paths
 
 
@@ -249,6 +264,7 @@ def run_pipeline(
     speaker: str = DEFAULT_SPEAKER,
     model_name: str = DEFAULT_MODEL,
     device: str = "cuda",
+    batch_size: int = 4,
 ) -> Path:
     """end-to-end: find zip -> validate -> extract -> synthesize -> build m4b."""
     content_dir = Path(content_dir)
@@ -263,7 +279,7 @@ def run_pipeline(
     metadata = extract_zip(zip_path, extract_dir)
     print(f"book: {metadata['title']} by {metadata['author']} ({len(metadata['chapters'])} chapters)")
 
-    engine = Qwen3TTSEngine(model_name=model_name, device=device)
+    engine = Qwen3TTSEngine(model_name=model_name, device=device, batch_size=batch_size)
     wav_paths = synthesize_chapters(metadata, extract_dir, wav_dir, engine, speaker=speaker)
 
     cover_path = extract_dir / COVER_FILE
