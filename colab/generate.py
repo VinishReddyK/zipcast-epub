@@ -110,7 +110,13 @@ class Qwen3TTSEngine:
 
     def __init__(self, model_name: str = DEFAULT_MODEL, device: str = "cuda", batch_size: int = 4):
         import torch
+        import transformers  # type: ignore
         from qwen_tts import Qwen3TTSModel  # type: ignore
+
+        # silences the "Setting `pad_token_id` to `eos_token_id`..." notice that
+        # transformers' generate() logs on every call -- harmless, but with chunks
+        # now batched per-chapter this fires hundreds of times over a full book
+        transformers.logging.set_verbosity_error()
 
         self._torch = torch
         # cap how many chunks go into one generate_custom_voice() call: peak GPU
