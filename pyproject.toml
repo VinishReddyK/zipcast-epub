@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zipcast"
 version = "0.1.0"
-description = "parse an epub into clean chapter text and pack it into a zip for Colab-side TTS"
+description = "epub parsing library shared with the Colab notebook (no CLI -- imported directly from the cloned repo)"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,9 +13,6 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "lxml>=5.0",
 ]
-
-[project.scripts]
-zipcast = "zipcast.cli:main"
 
 [project.optional-dependencies]
 dev = [

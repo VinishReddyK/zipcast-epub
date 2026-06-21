@@ -1,11 +1,11 @@
-"""Colab-side audiobook generation: find+validate the zip from `zipcast`, run
-Qwen3-TTS over each chapter, and assemble the result into a single m4b with
-chapter markers and cover art.
+"""Colab-side audiobook generation: find every .epub dropped into /content, parse
+each directly (no manual zip/upload step), run Qwen3-TTS over its chapters, and
+assemble the result into a single m4b with chapter markers and cover art.
 
 Designed to be imported from the companion notebook after cloning this repo:
 
-    from colab.generate import run_pipeline
-    run_pipeline()
+    from colab.generate import run_batch
+    run_batch()
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import json
 import re
 import subprocess
 import wave
-import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -29,43 +28,36 @@ METADATA_FILE = "metadata.json"
 COVER_FILE = "cover.jpg"
 
 
-def find_zip(content_dir: str | Path = "/content") -> Path:
-    """locate a zip file in content_dir, preferring the most recently uploaded one."""
+def find_epubs(content_dir: str | Path = "/content") -> list[Path]:
+    """locate every .epub file in content_dir, in name order."""
     content_dir = Path(content_dir)
-    candidates = sorted(content_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
+    epub_paths = sorted(content_dir.glob("*.epub"))
+    if not epub_paths:
         raise FileNotFoundError(
-            f"no .zip file found in {content_dir}. upload the zip produced by `zipcast` "
-            "(drag it into the Colab Files panel on the left) and re-run this cell."
+            f"no .epub files found in {content_dir}. drag one or more .epub files "
+            "into the Colab Files panel on the left and re-run this cell."
         )
-    zip_path = candidates[0]
-    if len(candidates) > 1:
-        names = ", ".join(p.name for p in candidates)
-        print(f"found {len(candidates)} zip files ({names}); using most recent: {zip_path.name}")
-    return zip_path
+    return epub_paths
 
 
-def validate_zip(zip_path: Path) -> None:
-    """raise a clear error if zip_path isn't a valid, non-corrupt zipcast bundle."""
-    if not zipfile.is_zipfile(zip_path):
-        raise ValueError(f"{zip_path} is not a valid zip file")
-    with zipfile.ZipFile(zip_path) as zf:
-        bad_member = zf.testzip()
-        if bad_member is not None:
-            raise ValueError(f"{zip_path} is corrupt (bad member: {bad_member})")
-        names = zf.namelist()
-        if METADATA_FILE not in names:
-            raise ValueError(f"{zip_path} has no {METADATA_FILE} -- this isn't a zipcast bundle")
-        if not any(n.endswith(".txt") for n in names):
-            raise ValueError(f"{zip_path} contains no chapter .txt files")
+def extract_book(epub_path: Path, extract_dir: Path) -> dict:
+    """parse epub_path directly and write its chapters/metadata/cover to extract_dir."""
+    from zipcast.epub_parser import parse_epub
 
-
-def extract_zip(zip_path: Path, extract_dir: Path) -> dict:
-    """extract zip_path into extract_dir and return its parsed metadata.json."""
     extract_dir.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(extract_dir)
-    return json.loads((extract_dir / METADATA_FILE).read_text(encoding="utf-8"))
+    book, cover_data = parse_epub(epub_path)
+    if not book.chapters:
+        raise ValueError(f"no chapters extracted from {epub_path} (epub may be malformed or DRM-protected)")
+
+    metadata = book.to_metadata()
+    (extract_dir / METADATA_FILE).write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    for chapter in book.chapters:
+        (extract_dir / f"{chapter.filename_base}.txt").write_text(chapter.text, encoding="utf-8")
+    if cover_data:
+        (extract_dir / COVER_FILE).write_bytes(cover_data)
+    return metadata
 
 
 def chunk_text(text: str, max_chars: int = MAX_CHUNK_CHARS) -> list[str]:
@@ -258,35 +250,58 @@ def build_m4b(
     return output_path
 
 
-def run_pipeline(
+def process_epub(
+    epub_path: Path,
+    content_dir: Path,
+    work_dir: Path,
+    engine: Qwen3TTSEngine,
+    speaker: str = DEFAULT_SPEAKER,
+) -> Path:
+    """parse one epub, synthesize its chapters, and build its m4b. skips work already done."""
+    book_dir = work_dir / epub_path.stem
+    extract_dir = book_dir / "extract"
+    wav_dir = book_dir / "wav"
+
+    metadata = extract_book(epub_path, extract_dir)
+    safe_title = "".join(c for c in metadata["title"] if c.isalnum() or c in " -_").strip() or epub_path.stem
+    output_path = content_dir / f"{safe_title}.m4b"
+
+    if output_path.exists():
+        print(f"skip (already built): {output_path.name}")
+        return output_path
+
+    print(f"\n=== {metadata['title']} by {metadata['author']} ({len(metadata['chapters'])} chapters) ===")
+    wav_paths = synthesize_chapters(metadata, extract_dir, wav_dir, engine, speaker=speaker)
+
+    cover_path = extract_dir / COVER_FILE
+    cover_path = cover_path if cover_path.exists() else None
+
+    build_m4b(metadata, wav_paths, cover_path, output_path)
+    print(f"done: {output_path}")
+    return output_path
+
+
+def run_batch(
     content_dir: str | Path = "/content",
     work_dir: str | Path = "/content/zipcast_work",
     speaker: str = DEFAULT_SPEAKER,
     model_name: str = DEFAULT_MODEL,
     device: str = "cuda",
     batch_size: int = 4,
-) -> Path:
-    """end-to-end: find zip -> validate -> extract -> synthesize -> build m4b."""
+) -> list[Path]:
+    """find every .epub in content_dir and turn each into an .m4b, one after another."""
     content_dir = Path(content_dir)
     work_dir = Path(work_dir)
-    extract_dir = work_dir / "extract"
-    wav_dir = work_dir / "wav"
 
-    zip_path = find_zip(content_dir)
-    validate_zip(zip_path)
-    print(f"using zip: {zip_path}")
-
-    metadata = extract_zip(zip_path, extract_dir)
-    print(f"book: {metadata['title']} by {metadata['author']} ({len(metadata['chapters'])} chapters)")
+    epub_paths = find_epubs(content_dir)
+    print(f"found {len(epub_paths)} epub file(s): {', '.join(p.name for p in epub_paths)}")
 
     engine = Qwen3TTSEngine(model_name=model_name, device=device, batch_size=batch_size)
-    wav_paths = synthesize_chapters(metadata, extract_dir, wav_dir, engine, speaker=speaker)
 
-    cover_path = extract_dir / COVER_FILE
-    cover_path = cover_path if cover_path.exists() else None
+    outputs = [
+        process_epub(epub_path, content_dir, work_dir, engine, speaker=speaker)
+        for epub_path in epub_paths
+    ]
 
-    safe_title = "".join(c for c in metadata["title"] if c.isalnum() or c in " -_").strip() or "audiobook"
-    output_path = content_dir / f"{safe_title}.m4b"
-    build_m4b(metadata, wav_paths, cover_path, output_path)
-    print(f"\ndone: {output_path}")
-    return output_path
+    print(f"\nall done: {len(outputs)} audiobook(s) generated")
+    return outputs
